@@ -71,9 +71,6 @@ impl FeishuCredential {
 
         Err(anyhow!("Bad response"))
     }
-    fn is_code_invalid_token(&self, code: i64) -> bool {
-        matches!(code, 99991663 | 99991664 | 99991665 | 99991668 | 99991677)
-    }
 
     pub async fn request_json<T: Serialize + ?Sized>(
         &self,
@@ -106,13 +103,13 @@ impl FeishuCredential {
 
             drop(access_token_ref);
 
+            let result_status = response.status();
             let result_value: Value = response.json().await?;
-
-            if let Some(code) = result_value["code"].as_i64() {
-                if !self.is_code_invalid_token(code) {
-                    result = Some(result_value);
-                    break;
-                }
+            
+            
+            if result_status.is_success() {
+                result = Some(result_value);
+                break;
             }
         }
 
@@ -193,9 +190,13 @@ async fn feishu_message_handler(
         let rss = get_current_pid()
             .and_then(|pid| s.process(pid).ok_or("Failed to get process"))
             .map(|process| process.memory());
-        let free_memory = s.free_memory();
+        let free_memory = s.available_memory();
+        let total_memory = s.total_memory();
+        let rss_mb: f64 = rss.unwrap_or(0) as f64 / 1024.0 / 1024.0;
+        let free_memory_mb: f64 = free_memory as f64 / 1024.0 / 1024.0;
+        let total_memory_mb: f64 = total_memory as f64 / 1024.0 / 1024.0;
         FeishuNewMessage::Text(json!({
-            "text": format!("Pong!\nMemory Usage: {:?} bytes\nFree Memory: {} bytes", rss.unwrap_or(0), free_memory)
+            "text": format!("Pong!\nMemory Usage: {:?} MiB\nFree Memory: {} MiB / {} MiB", rss_mb, free_memory_mb, total_memory_mb)
         }).to_string())
     } else if let Some(captures) = SUBSCRIBE.captures(text_content) {
         let repo = &captures[1];
@@ -545,35 +546,35 @@ async fn github_handler(
             let content_body;
             
             if let Ok(pr_open) = payload_types::PullRequestOpenedEvent::deserialize(&body) {
-                repo = pr_open.repository.full_name.clone();
-                repo_url = pr_open.repository.html_url.clone();
+                repo = pr_open.repository.full_name;
+                repo_url = pr_open.repository.html_url;
                 action = "Opened".to_string();
                 pr_number = pr_open.pull_request.pull_request.number;
-                pr_title = pr_open.pull_request.pull_request.title.clone();
-                pr_url = pr_open.pull_request.pull_request.html_url.clone();
-                sender_login = pr_open.sender.login.clone();
-                sender_url = pr_open.sender.html_url.clone();
+                pr_title = pr_open.pull_request.pull_request.title;
+                pr_url = pr_open.pull_request.pull_request.html_url;
+                sender_login = pr_open.sender.login;
+                sender_url = pr_open.sender.html_url;
                 content_body = pr_open.pull_request.pull_request.body.unwrap_or_default();
             }  else if let Ok(pr_closed) = payload_types::PullRequestClosedEvent::deserialize(&body) {
-                repo = pr_closed.repository.full_name.clone();
-                repo_url = pr_closed.repository.html_url.clone();
+                repo = pr_closed.repository.full_name;
+                repo_url = pr_closed.repository.html_url;
                 action = "Closed".to_string();
                 pr_number = pr_closed.pull_request.pull_request.number;
-                pr_title = pr_closed.pull_request.pull_request.title.clone();
-                pr_url = pr_closed.pull_request.pull_request.html_url.clone();
-                sender_login = pr_closed.sender.login.clone();
-                sender_url = pr_closed.sender.html_url.clone();
+                pr_title = pr_closed.pull_request.pull_request.title;
+                pr_url = pr_closed.pull_request.pull_request.html_url;
+                sender_login = pr_closed.sender.login;
+                sender_url = pr_closed.sender.html_url;
                 content_body = pr_closed.pull_request.pull_request.body.unwrap_or_default();
             } else if let Ok(pr_reopened) = payload_types::PullRequestReopenedEvent::deserialize(&body)
             {
-                repo = pr_reopened.repository.full_name.clone();
-                repo_url = pr_reopened.repository.html_url.clone();
+                repo = pr_reopened.repository.full_name;
+                repo_url = pr_reopened.repository.html_url;
                 action = "Reopened".to_string();
                 pr_number = pr_reopened.pull_request.pull_request.number;
-                pr_title = pr_reopened.pull_request.pull_request.title.clone();
-                pr_url = pr_reopened.pull_request.pull_request.html_url.clone();
-                sender_login = pr_reopened.sender.login.clone();
-                sender_url = pr_reopened.sender.html_url.clone();
+                pr_title = pr_reopened.pull_request.pull_request.title;
+                pr_url = pr_reopened.pull_request.pull_request.html_url;
+                sender_login = pr_reopened.sender.login;
+                sender_url = pr_reopened.sender.html_url;
                 content_body = pr_reopened.pull_request.pull_request.body.unwrap_or_default();
             } else {
                 return Ok(HttpResponse::BadRequest().finish());
@@ -583,7 +584,7 @@ async fn github_handler(
             let db = bot_data.db.read().await;
             let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
             let all_chats = col
-                .find(doc! { "repo": repo.clone(), "event": "PullRequest" })
+                .find(doc! { "repo": repo, "event": "PullRequest" })
                 .map_err(|e| {
                     error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
                 })?;
