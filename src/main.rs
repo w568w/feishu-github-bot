@@ -106,11 +106,14 @@ impl FeishuCredential {
             let result_status = response.status();
             let result_value: Value = response.json().await?;
             
-            
+                        
             if result_status.is_success() {
                 result = Some(result_value);
                 break;
             }
+
+            // If the access token is invalid, clear it and retry
+            *self.tenant_access_token.lock().await = None;
         }
 
         result.ok_or(anyhow!("Failed to get a valid response"))
