@@ -3,6 +3,16 @@ name = "feishu-github-bot"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
 [dependencies]
 actix-web = "4"
 serde = { version = "1", features = ["derive"] }
