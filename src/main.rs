@@ -1,4 +1,5 @@
 #![recursion_limit = "512"]
+#![feature(let_chains)]
 use actix_web::{error, post, web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::anyhow;
 use github_webhook::payload_types;
@@ -548,7 +549,9 @@ async fn github_handler(
             let sender_url;
             let content_body;
             
-            if let Ok(pr_open) = payload_types::PullRequestOpenedEvent::deserialize(&body) {
+            // payload_types::PullRequest*Event does not check action field. We need to check it manually.
+            let raw_action = body.get("action").and_then(Value::as_str);
+            if raw_action == Some("opened") && let Ok(pr_open) = payload_types::PullRequestOpenedEvent::deserialize(&body) {
                 repo = pr_open.repository.full_name;
                 repo_url = pr_open.repository.html_url;
                 action = "Opened".to_string();
@@ -558,7 +561,7 @@ async fn github_handler(
                 sender_login = pr_open.sender.login;
                 sender_url = pr_open.sender.html_url;
                 content_body = pr_open.pull_request.pull_request.body.unwrap_or_default();
-            }  else if let Ok(pr_closed) = payload_types::PullRequestClosedEvent::deserialize(&body) {
+            }  else if raw_action == Some("closed") && let Ok(pr_closed) = payload_types::PullRequestClosedEvent::deserialize(&body) {
                 repo = pr_closed.repository.full_name;
                 repo_url = pr_closed.repository.html_url;
                 action = "Closed".to_string();
@@ -568,7 +571,7 @@ async fn github_handler(
                 sender_login = pr_closed.sender.login;
                 sender_url = pr_closed.sender.html_url;
                 content_body = pr_closed.pull_request.pull_request.body.unwrap_or_default();
-            } else if let Ok(pr_reopened) = payload_types::PullRequestReopenedEvent::deserialize(&body)
+            } else if raw_action == Some("reopened") && let Ok(pr_reopened) = payload_types::PullRequestReopenedEvent::deserialize(&body)
             {
                 repo = pr_reopened.repository.full_name;
                 repo_url = pr_reopened.repository.html_url;
