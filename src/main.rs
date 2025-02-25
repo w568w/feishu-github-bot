@@ -1,19 +1,15 @@
-#![recursion_limit = "512"]
-#![feature(let_chains)]
-use actix_web::{error, post, web, App, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, error, post, web};
 use anyhow::anyhow;
-use github_webhook::payload_types;
-use octokit_rs::webhook;
+use r#final::Final;
 use once_cell::sync::Lazy;
 use polodb_core::bson::{doc, to_document};
 use polodb_core::results::DeleteResult;
-use polodb_core::Database;
-use r#final::Final;
+use polodb_core::{CollectionT, Database};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{from_value, json, Value};
-use sysinfo::{get_current_pid, System};
+use serde_json::{Value, json};
+use sysinfo::{System, get_current_pid};
 use tokio::sync::{Mutex, RwLock};
 
 struct FeishuCredential {
@@ -106,8 +102,7 @@ impl FeishuCredential {
 
             let result_status = response.status();
             let result_value: Value = response.json().await?;
-            
-                        
+
             if result_status.is_success() {
                 result = Some(result_value);
                 break;
@@ -213,7 +208,7 @@ async fn feishu_message_handler(
                         "text": "Invalid event type"
                     })
                     .to_string(),
-                )
+                );
             }
         };
         let subscription = Subscription {
@@ -236,7 +231,7 @@ async fn feishu_message_handler(
                         "text": format!("Already subscribed to {} {:?}", repo, event)
                     })
                     .to_string(),
-                )
+                );
             }
             Err(e) => {
                 return FeishuNewMessage::Text(
@@ -244,7 +239,7 @@ async fn feishu_message_handler(
                         "text": format!("Failed to check subscription existence: {}", e)
                     })
                     .to_string(),
-                )
+                );
             }
             _ => {}
         }
@@ -273,7 +268,7 @@ async fn feishu_message_handler(
                         "text": "Invalid event type"
                     })
                     .to_string(),
-                )
+                );
             }
         };
         let subscription = Subscription {
@@ -316,7 +311,7 @@ async fn feishu_message_handler(
     } else if LIST.is_match(text_content) {
         let db = db.read().await;
         let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
-        let cursor = col.find(doc! {"chat_id": chat_id.as_ref()});
+        let cursor = col.find(doc! {"chat_id": chat_id.as_ref()}).run();
         if let Err(e) = cursor {
             return FeishuNewMessage::Text(
                 json!({
@@ -336,7 +331,7 @@ async fn feishu_message_handler(
                             "text": format!("Failed to list subscriptions: {}", e)
                         })
                         .to_string(),
-                    )
+                    );
                 }
             }
         }
@@ -429,64 +424,50 @@ async fn github_handler(
     );
     match event_type {
         "issues" | "issue_comment" => {
-            let repo;
-            let repo_url;
-            let action;
-            let issue_number;
-            let issue_title;
-            let issue_url;
-            let sender_login;
-            let sender_url;
-            let content_body;
-            if let Ok(issue_open) = from_value::<webhook::IssuesOpened>(body.clone()) {
-                repo = issue_open.repository.full_name.clone();
-                repo_url = issue_open.repository.html_url.clone();
-                action = "Opened".to_string();
-                issue_number = issue_open.issue.number;
-                issue_title = issue_open.issue.title.clone();
-                issue_url = issue_open.issue.html_url.clone();
-                sender_login = issue_open.sender.login.clone();
-                sender_url = issue_open.sender.html_url.clone();
-                content_body = issue_open.issue.body.unwrap_or_default();
-            } else if let Ok(issue_comment) =
-                from_value::<webhook::IssueCommentCreated>(body.clone())
-            {
-                repo = issue_comment.repository.full_name.clone();
-                repo_url = issue_comment.repository.html_url.clone();
-                action = "Commented".to_string();
-                issue_number = issue_comment.issue.number;
-                issue_title = issue_comment.issue.title.clone();
-                issue_url = issue_comment.issue.html_url.clone();
-                sender_login = issue_comment.sender.login.clone();
-                sender_url = issue_comment.sender.html_url.clone();
-                content_body = issue_comment.comment.body.clone();
-            } else if let Ok(issue_closed) = from_value::<webhook::IssuesClosed>(body.clone()) {
-                repo = issue_closed.repository.full_name.clone();
-                repo_url = issue_closed.repository.html_url.clone();
-                action = "Closed".to_string();
-                issue_number = issue_closed.issue.number;
-                issue_title = issue_closed.issue.title.clone();
-                issue_url = issue_closed.issue.html_url.clone();
-                sender_login = issue_closed.sender.login.clone();
-                sender_url = issue_closed.sender.html_url.clone();
-                content_body = issue_closed.issue.body.unwrap_or_default();
-            } else if let Ok(issue_reopened) = from_value::<webhook::IssuesReopened>(body.clone()) {
-                repo = issue_reopened.repository.full_name.clone();
-                repo_url = issue_reopened.repository.html_url.clone();
-                action = "Reopened".to_string();
-                issue_number = issue_reopened.issue.number;
-                issue_title = issue_reopened.issue.title.clone();
-                issue_url = issue_reopened.issue.html_url.clone();
-                sender_login = issue_reopened.sender.login.clone();
-                sender_url = issue_reopened.sender.html_url.clone();
-                content_body = issue_reopened.issue.body.unwrap_or_default();
-            } else {
-                return Ok(HttpResponse::NoContent().finish());
-            }
+            let raw_action = body
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| error::ErrorBadRequest("No action field in request"))?;
+            let repo = body["repository"]["full_name"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No repository full name in request"))?;
+            let repo_url = body["repository"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No repository html url in request"))?;
+            let issue_number = body["issue"]["number"]
+                .as_i64()
+                .ok_or_else(|| error::ErrorBadRequest("No issue number in request"))?;
+            let issue_title = body["issue"]["title"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No issue title in request"))?;
+            let issue_url = body["issue"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No issue html url in request"))?;
+            let sender_login = body["sender"]["login"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No sender login in request"))?;
+            let sender_url = body["sender"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No sender html url in request"))?;
+            let content_body = match raw_action {
+                "created" => body["comment"]["body"].as_str().unwrap_or_default(),
+                _ => body["issue"]["body"].as_str().unwrap_or_default()
+            };
+            let action = match raw_action {
+                "opened" => "Opened",
+                "created" => "Commented",
+                "closed" => "Closed",
+                "reopened" => "Reopened",
+                _ => {
+                    return Ok(HttpResponse::NoContent().finish());
+                }
+            };
+
             let db = bot_data.db.read().await;
             let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
             let all_chats = col
-                .find(doc! { "repo": repo.clone(), "event": "Issue" })
+                .find(doc! { "repo": repo, "event": "Issue" })
+                .run()
                 .map_err(|e| {
                     error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
                 })?;
@@ -539,58 +520,52 @@ async fn github_handler(
             }
         }
         "pull_request" => {
-            let repo;
-            let repo_url;
-            let action;
-            let pr_number;
-            let pr_title;
-            let pr_url;
-            let sender_login;
-            let sender_url;
-            let content_body;
-            
             // payload_types::PullRequest*Event does not check action field. We need to check it manually.
-            let raw_action = body.get("action").and_then(Value::as_str);
-            if raw_action == Some("opened") && let Ok(pr_open) = payload_types::PullRequestOpenedEvent::deserialize(&body) {
-                repo = pr_open.repository.full_name;
-                repo_url = pr_open.repository.html_url;
-                action = "Opened".to_string();
-                pr_number = pr_open.pull_request.pull_request.number;
-                pr_title = pr_open.pull_request.pull_request.title;
-                pr_url = pr_open.pull_request.pull_request.html_url;
-                sender_login = pr_open.sender.login;
-                sender_url = pr_open.sender.html_url;
-                content_body = pr_open.pull_request.pull_request.body.unwrap_or_default();
-            }  else if raw_action == Some("closed") && let Ok(pr_closed) = payload_types::PullRequestClosedEvent::deserialize(&body) {
-                repo = pr_closed.repository.full_name;
-                repo_url = pr_closed.repository.html_url;
-                action = "Closed".to_string();
-                pr_number = pr_closed.pull_request.pull_request.number;
-                pr_title = pr_closed.pull_request.pull_request.title;
-                pr_url = pr_closed.pull_request.pull_request.html_url;
-                sender_login = pr_closed.sender.login;
-                sender_url = pr_closed.sender.html_url;
-                content_body = pr_closed.pull_request.pull_request.body.unwrap_or_default();
-            } else if raw_action == Some("reopened") && let Ok(pr_reopened) = payload_types::PullRequestReopenedEvent::deserialize(&body)
-            {
-                repo = pr_reopened.repository.full_name;
-                repo_url = pr_reopened.repository.html_url;
-                action = "Reopened".to_string();
-                pr_number = pr_reopened.pull_request.pull_request.number;
-                pr_title = pr_reopened.pull_request.pull_request.title;
-                pr_url = pr_reopened.pull_request.pull_request.html_url;
-                sender_login = pr_reopened.sender.login;
-                sender_url = pr_reopened.sender.html_url;
-                content_body = pr_reopened.pull_request.pull_request.body.unwrap_or_default();
-            } else {
-                return Ok(HttpResponse::BadRequest().finish());
-            }
-            
-            println!("{} {} {} {} {} {} {}", repo, repo_url, action, pr_number, pr_title, pr_url, sender_login);
+            let raw_action = body
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| error::ErrorBadRequest("No action field in request"))?;
+            let repo = body["repository"]["full_name"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No repository full name in request"))?;
+            let repo_url = body["repository"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No repository html url in request"))?;
+            let pr_number = body["pull_request"]["number"]
+                .as_i64()
+                .ok_or_else(|| error::ErrorBadRequest("No pull request number in request"))?;
+            let pr_title = body["pull_request"]["title"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No pull request title in request"))?;
+            let pr_url = body["pull_request"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No pull request html url in request"))?;
+            let sender_login = body["sender"]["login"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No sender login in request"))?;
+            let sender_url = body["sender"]["html_url"]
+                .as_str()
+                .ok_or_else(|| error::ErrorBadRequest("No sender html url in request"))?;
+            let content_body = body["pull_request"]["body"].as_str().unwrap_or_default();
+
+            let action = match raw_action {
+                "opened" => "Opened",
+                "closed" => "Closed",
+                "reopened" => "Reopened",
+                _ => {
+                    return Ok(HttpResponse::NoContent().finish());
+                }
+            };
+
+            println!(
+                "{} {} {} {} {} {} {}",
+                repo, repo_url, action, pr_number, pr_title, pr_url, sender_login
+            );
             let db = bot_data.db.read().await;
             let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
             let all_chats = col
                 .find(doc! { "repo": repo, "event": "PullRequest" })
+                .run()
                 .map_err(|e| {
                     error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
                 })?;
@@ -655,7 +630,7 @@ async fn github_handler(
 async fn main() -> std::io::Result<()> {
     let app_id = std::env::var("FEISHU_APP_ID").expect("FEISHU_APP_ID must be set");
     let app_secret = std::env::var("FEISHU_APP_SECRET").expect("FEISHU_APP_SECRET must be set");
-    let db = Database::open_file("app.polo.db")
+    let db = Database::open_path("app.polo.db")
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let bot_data = web::Data::new(BotData {
         feishu_credential: FeishuCredential {
