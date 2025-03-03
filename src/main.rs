@@ -454,10 +454,10 @@ async fn github_handler(
                 _ => body["issue"]["body"].as_str().unwrap_or_default()
             };
             let action = match raw_action {
-                "opened" => "Opened",
-                "created" => "Commented",
-                "closed" => "Closed",
-                "reopened" => "Reopened",
+                "opened" => "🐛 Issue Opened",
+                "created" => "💬 Issue Commented",
+                "closed" => "✅ Issue Closed",
+                "reopened" => "🔄 Issue Reopened",
                 _ => {
                     return Ok(HttpResponse::NoContent().finish());
                 }
@@ -549,9 +549,9 @@ async fn github_handler(
             let content_body = body["pull_request"]["body"].as_str().unwrap_or_default();
 
             let action = match raw_action {
-                "opened" => "Opened",
-                "closed" => "Closed",
-                "reopened" => "Reopened",
+                "opened" => "🚀 PR Opened",
+                "closed" => "✅ PR Closed",
+                "reopened" => "🔄 PR Reopened",
                 _ => {
                     return Ok(HttpResponse::NoContent().finish());
                 }
