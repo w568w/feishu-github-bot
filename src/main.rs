@@ -678,7 +678,7 @@ async fn xcode_cloud_handler(
     let db = bot_data.db.read().await;
     let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
     let all_chats = col
-        .find(doc! { "repo": repo, "event": "XcodeCloud" })
+        .find(doc! { "repo": &repo, "event": "XcodeCloud" })
         .run()
         .map_err(|e| {
             error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
