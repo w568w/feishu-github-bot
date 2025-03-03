@@ -151,15 +151,15 @@ async fn feishu_message_handler(
     chat_id: impl AsRef<str>,
     content: impl AsRef<str>,
     db: &RwLock<Database>,
-) -> FeishuNewMessage {
+) -> Option<FeishuNewMessage> {
     let message = serde_json::from_str::<Value>(content.as_ref());
     if let Err(e) = message {
-        return FeishuNewMessage::Text(
+        return Some(FeishuNewMessage::Text(
             json!({
                 "text": format!("Failed to parse message: {}", e)
             })
             .to_string(),
-        );
+        ));
     }
     let message = message.unwrap();
     let text_content = message["text"].as_str().unwrap_or("").trim();
@@ -173,7 +173,7 @@ async fn feishu_message_handler(
     static LIST: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+list$").unwrap());
 
     if HELP.is_match(text_content) {
-        FeishuNewMessage::Text(
+        Some(FeishuNewMessage::Text(
             json!({
                 "text": r#"Available commands:
 - `@bot help`: Show this help message
@@ -184,7 +184,7 @@ async fn feishu_message_handler(
 "#
             })
             .to_string(),
-        )
+        ))
     } else if PING.is_match(text_content) {
         let s = System::new_all();
         let rss = get_current_pid()
@@ -195,9 +195,9 @@ async fn feishu_message_handler(
         let rss_mb: f64 = rss.unwrap_or(0) as f64 / 1024.0 / 1024.0;
         let free_memory_mb: f64 = free_memory as f64 / 1024.0 / 1024.0;
         let total_memory_mb: f64 = total_memory as f64 / 1024.0 / 1024.0;
-        FeishuNewMessage::Text(json!({
+        Some(FeishuNewMessage::Text(json!({
             "text": format!("Pong!\nMemory Usage: {:?} MiB\nFree Memory: {} MiB / {} MiB", rss_mb, free_memory_mb, total_memory_mb)
-        }).to_string())
+        }).to_string()))
     } else if let Some(captures) = SUBSCRIBE.captures(text_content) {
         let repo = &captures[1];
         let event = match &captures[2] {
@@ -205,12 +205,12 @@ async fn feishu_message_handler(
             "issue" => SubscriptionEvent::Issue,
             "xcode-cloud" => SubscriptionEvent::XcodeCloud,
             _ => {
-                return FeishuNewMessage::Text(
+                return Some(FeishuNewMessage::Text(
                     json!({
                         "text": "Invalid event type"
                     })
                     .to_string(),
-                );
+                ));
             }
         };
         let subscription = Subscription {
@@ -228,36 +228,36 @@ async fn feishu_message_handler(
             });
         match result {
             Ok(Some(_)) => {
-                return FeishuNewMessage::Text(
+                return Some(FeishuNewMessage::Text(
                     json!({
                         "text": format!("Already subscribed to {} {:?}", repo, event)
                     })
                     .to_string(),
-                );
+                ));
             }
             Err(e) => {
-                return FeishuNewMessage::Text(
+                return Some(FeishuNewMessage::Text(
                     json!({
                         "text": format!("Failed to check subscription existence: {}", e)
                     })
                     .to_string(),
-                );
+                ));
             }
             _ => {}
         }
         match col.insert_one(subscription) {
-            Ok(_) => FeishuNewMessage::Text(
+            Ok(_) => Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Subscribed to {} {:?}", repo, event)
                 })
                 .to_string(),
-            ),
-            Err(e) => FeishuNewMessage::Text(
+            )),
+            Err(e) => Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Failed to subscribe: {}", e)
                 })
                 .to_string(),
-            ),
+            )),
         }
     } else if let Some(captures) = UNSUBSCRIBE.captures(text_content) {
         let repo = &captures[1];
@@ -266,12 +266,12 @@ async fn feishu_message_handler(
             "issue" => SubscriptionEvent::Issue,
             "xcode-cloud" => SubscriptionEvent::XcodeCloud,
             _ => {
-                return FeishuNewMessage::Text(
+                return Some(FeishuNewMessage::Text(
                     json!({
                         "text": "Invalid event type"
                     })
                     .to_string(),
-                );
+                ));
             }
         };
         let subscription = Subscription {
@@ -283,45 +283,45 @@ async fn feishu_message_handler(
         let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
         let doc = to_document(&subscription);
         if let Err(e) = doc {
-            return FeishuNewMessage::Text(
+            return Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Failed to convert subscription to document: {}", e)
                 })
                 .to_string(),
-            );
+            ));
         }
         let doc = doc.unwrap();
         match col.delete_one(doc) {
-            Ok(DeleteResult { deleted_count: 0 }) => FeishuNewMessage::Text(
+            Ok(DeleteResult { deleted_count: 0 }) => Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Have not subscribed to {} {:?}", repo, event)
                 })
                 .to_string(),
-            ),
-            Ok(DeleteResult { deleted_count: _ }) => FeishuNewMessage::Text(
+            )),
+            Ok(DeleteResult { deleted_count: _ }) => Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Unsubscribed from {} {:?}", repo, event)
                 })
                 .to_string(),
-            ),
-            Err(e) => FeishuNewMessage::Text(
+            )),
+            Err(e) => Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Failed to unsubscribe: {}", e)
                 })
                 .to_string(),
-            ),
+            )),
         }
     } else if LIST.is_match(text_content) {
         let db = db.read().await;
         let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
         let cursor = col.find(doc! {"chat_id": chat_id.as_ref()}).run();
         if let Err(e) = cursor {
-            return FeishuNewMessage::Text(
+            return Some(FeishuNewMessage::Text(
                 json!({
                     "text": format!("Failed to list subscriptions: {}", e)
                 })
                 .to_string(),
-            );
+            ));
         }
         let cursor = cursor.unwrap();
         let mut subscriptions = Vec::new();
@@ -329,28 +329,23 @@ async fn feishu_message_handler(
             match result {
                 Ok(subscription) => subscriptions.push(subscription),
                 Err(e) => {
-                    return FeishuNewMessage::Text(
+                    return Some(FeishuNewMessage::Text(
                         json!({
                             "text": format!("Failed to list subscriptions: {}", e)
                         })
                         .to_string(),
-                    );
+                    ));
                 }
             }
         }
-        FeishuNewMessage::Text(
+        Some(FeishuNewMessage::Text(
             json!({
                 "text": format!("Subscriptions: \n{}", subscriptions.into_iter().map(|s| format!("{} {:?}", s.repo, s.event)).collect::<Vec<String>>().join("\n"))
             })
-            .to_string(),
-        )
+                .to_string(),
+        ))
     } else {
-        FeishuNewMessage::Text(
-            json!({
-                "text": "Unsupported command"
-            })
-            .to_string(),
-        )
+        None
     }
 }
 
@@ -389,14 +384,18 @@ async fn feishu_handler(
             let chat_id = info["event"]["message"]["chat_id"]
                 .as_str()
                 .ok_or(error::ErrorBadRequest("No chat id in request"))?;
-            bot_data
-                .feishu_credential
-                .api_send_message(
-                    chat_id,
-                    feishu_message_handler(chat_id, message_json, &bot_data.db).await,
-                )
-                .await
-                .map_err(|e| error::ErrorBadRequest(format!("Failed to send message: {}", e)))?;
+
+            if let Some(response_message) =
+                feishu_message_handler(chat_id, message_json, &bot_data.db).await
+            {
+                bot_data
+                    .feishu_credential
+                    .api_send_message(chat_id, response_message)
+                    .await
+                    .map_err(|e| {
+                        error::ErrorBadRequest(format!("Failed to send message: {}", e))
+                    })?;
+            }
             Ok(HttpResponse::Ok().body(format!("Received message: {}", message_json)))
         }
         _ => Ok(HttpResponse::Ok().body("Unsupported event type")),
@@ -656,7 +655,7 @@ async fn xcode_cloud_handler(
     let event_type = body["metadata"]["attributes"]["eventType"]
         .as_str()
         .ok_or_else(|| error::ErrorBadRequest("No event type in request"))?;
-    
+
     let build_number = body["ciBuildRun"]["attributes"]["number"]
         .as_i64()
         .ok_or_else(|| error::ErrorBadRequest("No build number in request"))?;
