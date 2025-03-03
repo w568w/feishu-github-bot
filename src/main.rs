@@ -673,7 +673,7 @@ async fn xcode_cloud_handler(
     
     let completion_status = body["ciBuildRun"]["attributes"]["completionStatus"] // This is optional
         .as_str()
-        .unwrap_or("");
+        .unwrap_or("None");
 
     let db = bot_data.db.read().await;
     let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
@@ -695,7 +695,7 @@ async fn xcode_cloud_handler(
     );
     let content = json!({
         "tag": "markdown",
-        "content": format!("Build #{} of [{}]({})\nCommit: [{}]({})\nStatus: {}\nProgress: {}", build_number, repo, repo_url, commit_sha, commit_url, completion_status, execution_progress),
+        "content": format!("Build #{}\n\nCommit: {}\n\nProgress: {}\nCompletion Status: {}", build_number, commit_url, execution_progress, completion_status),
     });
     let divider = json!({"tag": "hr"});
     let repo_link = json!({
