@@ -31,6 +31,7 @@ struct Subscription {
 enum SubscriptionEvent {
     PullRequest,
     Issue,
+    XcodeCloud,
 }
 
 struct BotData {
@@ -166,9 +167,9 @@ async fn feishu_message_handler(
     static HELP: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+help$").unwrap());
     static PING: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+ping$").unwrap());
     static SUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue)$").unwrap());
+        Lazy::new(|| Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud)$").unwrap());
     static UNSUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue)$").unwrap());
+        Lazy::new(|| Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue|xcode-cloud)$").unwrap());
     static LIST: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+list$").unwrap());
 
     if HELP.is_match(text_content) {
@@ -177,8 +178,8 @@ async fn feishu_message_handler(
                 "text": r#"Available commands:
 - `@bot help`: Show this help message
 - `@bot ping`: Check if the bot is alive
-- `@bot subscribe <repo> <pr|issue>`: Subscribe to the events of a repository
-- `@bot unsubscribe <repo> <pr|issue>`: Unsubscribe from the events of a repository
+- `@bot subscribe <repo> <pr|issue|xcode-cloud>`: Subscribe to the events of a repository
+- `@bot unsubscribe <repo> <pr|issue|xcode-cloud>`: Unsubscribe from the events of a repository
 - `@bot list`: List all the subscriptions
 "#
             })
@@ -202,6 +203,7 @@ async fn feishu_message_handler(
         let event = match &captures[2] {
             "pr" => SubscriptionEvent::PullRequest,
             "issue" => SubscriptionEvent::Issue,
+            "xcode-cloud" => SubscriptionEvent::XcodeCloud,
             _ => {
                 return FeishuNewMessage::Text(
                     json!({
@@ -262,6 +264,7 @@ async fn feishu_message_handler(
         let event = match &captures[2] {
             "pr" => SubscriptionEvent::PullRequest,
             "issue" => SubscriptionEvent::Issue,
+            "xcode-cloud" => SubscriptionEvent::XcodeCloud,
             _ => {
                 return FeishuNewMessage::Text(
                     json!({
@@ -621,6 +624,111 @@ async fn github_handler(
             return Ok(HttpResponse::NoContent().finish());
         }
         _ => {}
+    }
+
+    Ok(HttpResponse::NoContent().finish())
+}
+
+
+#[post("/xcode-cloud")]
+async fn xcode_cloud_handler(
+    req_body: web::Json<Value>,
+    req: HttpRequest,
+    bot_data: web::Data<BotData>,
+) -> actix_web::Result<HttpResponse> {
+    let body = req_body.into_inner();
+    println!(
+        "Received Xcode Cloud event: {}",
+        body
+    );
+
+    let repo_name = body["scmRepository"]["attributes"]["repositoryName"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No repository name in request"))?;
+    let repo_owner = body["scmRepository"]["attributes"]["ownerName"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No repository owner in request"))?;
+    let repo = format!("{}/{}", repo_owner, repo_name);
+    let repo_url = body["scmRepository"]["attributes"]["httpCloneUrl"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No repository html url in request"))?
+        .trim_end_matches(".git");
+
+    let event_type = body["metadata"]["attributes"]["eventType"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No event type in request"))?;
+    
+    let build_number = body["ciBuildRun"]["attributes"]["number"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No build number in request"))?;
+    let commit_sha = body["ciBuildRun"]["attributes"]["sourceCommit"]["commitSha"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No commit sha in request"))?;
+    let commit_url = body["ciBuildRun"]["attributes"]["sourceCommit"]["htmlUrl"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No commit url in request"))?;
+    let execution_progress = body["ciBuildRun"]["attributes"]["executionProgress"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No execution progress in request"))?;
+    
+    let completion_status = body["ciBuildRun"]["attributes"]["completionStatus"] // This is optional
+        .as_str()
+        .unwrap_or("");
+
+    let db = bot_data.db.read().await;
+    let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
+    let all_chats = col
+        .find(doc! { "repo": repo, "event": "XcodeCloud" })
+        .run()
+        .map_err(|e| {
+            error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
+        })?;
+
+    // build message card
+    let header = json!({
+            "template": "red",
+            "title":{
+                "content": "Xcode Cloud Build",
+                "tag": "plain_text"
+            }
+        }
+    );
+    let content = json!({
+        "tag": "markdown",
+        "content": format!("Build #{} of [{}]({})\nCommit: [{}]({})\nStatus: {}\nProgress: {}", build_number, repo, repo_url, commit_sha, commit_url, completion_status, execution_progress),
+    });
+    let divider = json!({"tag": "hr"});
+    let repo_link = json!({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "lark_md",
+                "content": format!("[{}]({})", repo, repo_url)
+            }
+        ]
+    });
+    let card = json!({
+        "config": {
+            "wide_screen_mode": true
+        },
+        "elements": [content, divider, repo_link],
+        "header": header
+    })
+    .to_string();
+
+    for chat in all_chats {
+        if let Ok(chat) = chat {
+            bot_data
+                .feishu_credential
+                .api_send_message(
+                    &chat.chat_id,
+                    FeishuNewMessage::Interactive(card.clone()),
+                )
+                .await
+                .map_err(|e| {
+                    error::ErrorBadRequest(format!("Failed to send message: {}", e))
+                })?;
+        }
     }
 
     Ok(HttpResponse::NoContent().finish())
