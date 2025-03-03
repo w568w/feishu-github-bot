@@ -772,6 +772,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .service(feishu_handler)
             .service(github_handler)
+            .service(xcode_cloud_handler)
             .app_data(bot_data.clone())
     })
     .bind(("0.0.0.0", 18235))?
