@@ -667,13 +667,33 @@ async fn xcode_cloud_handler(
     let commit_url = body["ciBuildRun"]["attributes"]["sourceCommit"]["htmlUrl"]
         .as_str()
         .ok_or_else(|| error::ErrorBadRequest("No commit url in request"))?;
-    let execution_progress = body["ciBuildRun"]["attributes"]["executionProgress"]
+    let commit_author = body["ciBuildRun"]["attributes"]["sourceCommit"]["author"]["displayName"]
+        .as_str()
+        .ok_or_else(|| error::ErrorBadRequest("No commit author in request"))?;
+    let execution_progress = body["ciBuildRun"]["attributes"]["executionProgress"] // PENDING, RUNNING, COMPLETE
         .as_str()
         .ok_or_else(|| error::ErrorBadRequest("No execution progress in request"))?;
-    
-    let completion_status = body["ciBuildRun"]["attributes"]["completionStatus"] // This is optional
+    let completion_status = body["ciBuildRun"]["attributes"]["completionStatus"] // (Optional) SUCCEEDED, FAILED
         .as_str()
         .unwrap_or("None");
+
+    let title = match (execution_progress, completion_status) {
+        ("PENDING", _) => "Xcode Cloud Build Created",
+        ("RUNNING", _) => "Xcode Cloud Build Started",
+        ("COMPLETE", "SUCCEEDED") => "Xcode Cloud Build Succeeded",
+        ("COMPLETE", "FAILED") => "Xcode Cloud Build Failed",
+        ("COMPLETE", _) => "Xcode Cloud Build Completed",
+        _ => "Xcode Cloud Build",
+    };
+
+    let content = match (execution_progress, completion_status) {
+        ("PENDING", _) => format!("Build #{} pending\n\nCommit: [{}]({})\nAuthor: {}", build_number, commit_sha, commit_url, commit_author),
+        ("RUNNING", _) => format!("Build #{} started\n\nCommit: [{}]({})\nAuthor: {}", build_number, commit_sha, commit_url, commit_author),
+        ("COMPLETE", "SUCCEEDED") => format!("Build #{} succeeded\n\nCommit: [{}]({})\nAuthor: {}", build_number, commit_sha, commit_url, commit_author),
+        ("COMPLETE", "FAILED") => format!("Build #{} failed\n\nCommit: [{}]({})\nAuthor: {}", build_number, commit_sha, commit_url, commit_author),
+        ("COMPLETE", _) => format!("Build #{} completed (status {})\n\nCommit: [{}]({})\nAuthor: {}", build_number, completion_status, commit_sha, commit_url, commit_author),
+        _ => format!("Build #{} {}\n\nCommit: [{}]({})\nAuthor: {}", build_number, execution_progress, commit_sha, commit_url, commit_author),
+    };
 
     let db = bot_data.db.read().await;
     let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
@@ -688,14 +708,14 @@ async fn xcode_cloud_handler(
     let header = json!({
             "template": "red",
             "title":{
-                "content": "Xcode Cloud Build",
+                "content": title,
                 "tag": "plain_text"
             }
         }
     );
     let content = json!({
         "tag": "markdown",
-        "content": format!("Build #{}\n\nCommit: {}\n\nProgress: {}\nCompletion Status: {}", build_number, commit_url, execution_progress, completion_status),
+        "content": content,
     });
     let divider = json!({"tag": "hr"});
     let repo_link = json!({
