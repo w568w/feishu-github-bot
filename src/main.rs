@@ -633,7 +633,6 @@ async fn github_handler(
 #[post("/xcode-cloud")]
 async fn xcode_cloud_handler(
     req_body: web::Json<Value>,
-    req: HttpRequest,
     bot_data: web::Data<BotData>,
 ) -> actix_web::Result<HttpResponse> {
     let body = req_body.into_inner();
