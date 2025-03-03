@@ -659,7 +659,7 @@ async fn xcode_cloud_handler(
         .ok_or_else(|| error::ErrorBadRequest("No event type in request"))?;
     
     let build_number = body["ciBuildRun"]["attributes"]["number"]
-        .as_str()
+        .as_i64()
         .ok_or_else(|| error::ErrorBadRequest("No build number in request"))?;
     let commit_sha = body["ciBuildRun"]["attributes"]["sourceCommit"]["commitSha"]
         .as_str()
