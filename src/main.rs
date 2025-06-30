@@ -773,12 +773,14 @@ async fn xcode_cloud_handler(
 
 #[post("/app-store-connect")]
 async fn app_store_connect_handler(
-    req_body: web::Json<Value>,
+    body: web::Bytes,
     req: HttpRequest,
     bot_data: web::Data<BotData>,
 ) -> actix_web::Result<HttpResponse> {
-    let body = req_body.into_inner();
-    println!("Received App Store Connect event: {}", body);
+    // Parse the body as JSON for event processing
+    let body_json: Value = serde_json::from_slice(&body)
+        .map_err(|e| error::ErrorBadRequest(format!("Failed to parse body as JSON: {}", e)))?;
+    println!("Received App Store Connect event: {}", body_json);
 
     // Get the signature from the x-apple-signature header
     let signature = req
@@ -791,10 +793,8 @@ async fn app_store_connect_handler(
         .map_err(|e| {
             error::ErrorBadRequest(format!("Failed to parse x-apple-signature header: {}", e))
         })?;
-
-    // Get the raw body for signature verification
-    let raw_body = serde_json::to_string(&body)
-        .map_err(|e| error::ErrorBadRequest(format!("Failed to serialize body: {}", e)))?;
+    // Strip the 'hmacsha256=' prefix if present
+    let signature = signature.strip_prefix("hmacsha256=").unwrap_or(signature);
 
     // Find the subscription by trying to verify the signature with each secret
     let db = bot_data.db.read().await;
@@ -810,15 +810,11 @@ async fn app_store_connect_handler(
         if let Ok(subscription) = subscription_result {
             // Use the repo field as the secret for signature verification
             let secret = &subscription.repo;
-
-            // Verify the signature
+            // Verify the signature using the raw body bytes
             let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
                 .map_err(|e| error::ErrorBadRequest(format!("Failed to create HMAC: {}", e)))?;
-
-            mac.update(raw_body.as_bytes());
-
+            mac.update(&body);
             let expected_signature = hex::encode(mac.finalize().into_bytes());
-
             if signature == expected_signature {
                 matching_chat_ids.push(subscription.chat_id);
             }
@@ -832,15 +828,16 @@ async fn app_store_connect_handler(
     }
 
     // Determine event type
-    let event_type = body["data"]["type"].as_str().unwrap_or("");
+    let event_type = body_json["data"]["type"].as_str().unwrap_or("");
     let (content, card_title) = match event_type {
         "webhookPingCreated" => {
-            let timestamp = body["data"]["attributes"]["timestamp"]
+            let timestamp = body_json["data"]["attributes"]["timestamp"]
                 .as_str()
                 .unwrap_or("N/A");
             let formatted_timestamp = if timestamp != "N/A" {
                 if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                    let local_time = parsed_time.with_timezone(&chrono::Local);
+                    local_time.format("%Y-%m-%d %H:%M:%S %:z").to_string()
                 } else {
                     timestamp.to_string()
                 }
@@ -856,30 +853,52 @@ async fn app_store_connect_handler(
             )
         }
         "appStoreVersionAppVersionStateUpdated" => {
-            let new_value = body["data"]["attributes"]["newValue"]
+            let new_value = body_json["data"]["attributes"]["newValue"]
                 .as_str()
                 .unwrap_or("N/A");
-            let old_value = body["data"]["attributes"]["oldValue"]
+            let old_value = body_json["data"]["attributes"]["oldValue"]
                 .as_str()
                 .unwrap_or("N/A");
-            let timestamp = body["data"]["attributes"]["timestamp"]
+            let timestamp = body_json["data"]["attributes"]["timestamp"]
+                .as_str()
+                .unwrap_or("N/A");
+            let id = body_json["data"]["relationships"]["instance"]["data"]["id"]
                 .as_str()
                 .unwrap_or("N/A");
             let formatted_timestamp = if timestamp != "N/A" {
                 if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                    // Use the device's local time zone
+                    let local_time = parsed_time.with_timezone(&chrono::Local);
+                    local_time.format("%Y-%m-%d %H:%M:%S %:z").to_string()
                 } else {
                     timestamp.to_string()
                 }
             } else {
                 timestamp.to_string()
             };
+            fn screaming_snake_to_title(s: &str) -> String {
+                s.split('_')
+                    .map(|word| {
+                        let mut chars = word.chars();
+                        match chars.next() {
+                            Some(first) => {
+                                first.to_uppercase().collect::<String>()
+                                    + &chars.as_str().to_lowercase()
+                            }
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+            let new_value_hr = screaming_snake_to_title(new_value);
+            let old_value_hr = screaming_snake_to_title(old_value);
             (
                 format!(
-                    "App state changed from **{}** to **{}**\n\nTime: {}",
-                    old_value, new_value, formatted_timestamp
+                    "App Store Connect app state for `{}` updated.\n\nCurrent state: `{}`\nPrevious state: `{}`\n\nID: `{}`\nTime: {}",
+                    id, new_value_hr, old_value_hr, id, formatted_timestamp
                 ),
-                "App State Updated",
+                format!("App State Updated: {}", new_value_hr),
             )
         }
         _ => (
