@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sysinfo::{System, get_current_pid};
 use tokio::sync::{Mutex, RwLock};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::collections::HashMap;
+use hex;
+use chrono;
 
 struct FeishuCredential {
     app_id: Final<String>,
@@ -32,6 +37,7 @@ enum SubscriptionEvent {
     PullRequest,
     Issue,
     XcodeCloud,
+    AppStoreConnect,
 }
 
 struct BotData {
@@ -167,9 +173,9 @@ async fn feishu_message_handler(
     static HELP: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+help$").unwrap());
     static PING: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+ping$").unwrap());
     static SUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud)$").unwrap());
+        Lazy::new(|| Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$").unwrap());
     static UNSUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue|xcode-cloud)$").unwrap());
+        Lazy::new(|| Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$").unwrap());
     static LIST: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+list$").unwrap());
 
     if HELP.is_match(text_content) {
@@ -178,9 +184,11 @@ async fn feishu_message_handler(
                 "text": r#"Available commands:
 - `@bot help`: Show this help message
 - `@bot ping`: Check if the bot is alive
-- `@bot subscribe <repo> <pr|issue|xcode-cloud>`: Subscribe to the events of a repository
-- `@bot unsubscribe <repo> <pr|issue|xcode-cloud>`: Unsubscribe from the events of a repository
+- `@bot subscribe <repo> <pr|issue|xcode-cloud|app-store-connect>`: Subscribe to the events of a repository
+- `@bot unsubscribe <repo> <pr|issue|xcode-cloud|app-store-connect>`: Unsubscribe from the events of a repository
 - `@bot list`: List all the subscriptions
+
+For App Store Connect, use the secret as the repo parameter.
 "#
             })
             .to_string(),
@@ -204,6 +212,7 @@ async fn feishu_message_handler(
             "pr" => SubscriptionEvent::PullRequest,
             "issue" => SubscriptionEvent::Issue,
             "xcode-cloud" => SubscriptionEvent::XcodeCloud,
+            "app-store-connect" => SubscriptionEvent::AppStoreConnect,
             _ => {
                 return FeishuNewMessage::Text(
                     json!({
@@ -265,6 +274,7 @@ async fn feishu_message_handler(
             "pr" => SubscriptionEvent::PullRequest,
             "issue" => SubscriptionEvent::Issue,
             "xcode-cloud" => SubscriptionEvent::XcodeCloud,
+            "app-store-connect" => SubscriptionEvent::AppStoreConnect,
             _ => {
                 return FeishuNewMessage::Text(
                     json!({
@@ -629,7 +639,6 @@ async fn github_handler(
     Ok(HttpResponse::NoContent().finish())
 }
 
-
 #[post("/xcode-cloud")]
 async fn xcode_cloud_handler(
     req_body: web::Json<Value>,
@@ -753,6 +762,124 @@ async fn xcode_cloud_handler(
     Ok(HttpResponse::NoContent().finish())
 }
 
+#[post("/app-store-connect")]
+async fn app_store_connect_handler(
+    req_body: web::Json<Value>,
+    req: HttpRequest,
+    bot_data: web::Data<BotData>,
+) -> actix_web::Result<HttpResponse> {
+    let body = req_body.into_inner();
+    println!("Received App Store Connect event: {}", body);
+
+    // Get the signature from the x-apple-signature header
+    let signature = req
+        .headers()
+        .get("x-apple-signature")
+        .ok_or(error::ErrorBadRequest("No x-apple-signature header in request"))?
+        .to_str()
+        .map_err(|e| {
+            error::ErrorBadRequest(format!("Failed to parse x-apple-signature header: {}", e))
+        })?;
+
+    // Get the raw body for signature verification
+    let raw_body = serde_json::to_string(&body)
+        .map_err(|e| error::ErrorBadRequest(format!("Failed to serialize body: {}", e)))?;
+
+    // Find the subscription by trying to verify the signature with each secret
+    let db = bot_data.db.read().await;
+    let col = db.collection::<Subscription>(SUBSCRIPTIONS_COLLECTION);
+    let all_subscriptions = col
+        .find(doc! { "event": "AppStoreConnect" })
+        .run()
+        .map_err(|e| {
+            error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
+        })?;
+
+    let mut matching_chat_ids = Vec::new();
+
+    for subscription_result in all_subscriptions {
+        if let Ok(subscription) = subscription_result {
+            // Use the repo field as the secret for signature verification
+            let secret = &subscription.repo;
+            
+            // Verify the signature
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+                .map_err(|e| error::ErrorBadRequest(format!("Failed to create HMAC: {}", e)))?;
+            
+            mac.update(raw_body.as_bytes());
+            
+            let expected_signature = hex::encode(mac.finalize().into_bytes());
+            
+            if signature == expected_signature {
+                matching_chat_ids.push(subscription.chat_id);
+            }
+        }
+    }
+
+    if matching_chat_ids.is_empty() {
+        return Err(error::ErrorBadRequest("No matching subscription found for signature"));
+    }
+
+    // Extract the specific fields from the webhook payload
+    let new_value = body["newValue"].as_str().unwrap_or("N/A");
+    let old_value = body["oldValue"].as_str().unwrap_or("N/A");
+    let timestamp = body["timestamp"].as_str().unwrap_or("N/A");
+    
+    // Format the timestamp
+    let formatted_timestamp = if timestamp != "N/A" {
+        // Parse ISO 8601 timestamp and format it
+        if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+            parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+        } else {
+            timestamp.to_string()
+        }
+    } else {
+        timestamp.to_string()
+    };
+
+    // Create a formatted message with only the requested fields
+    let content = format!(
+        "**Status Change**\n\n**From:** {}\n**To:** {}\n**Time:** {}",
+        old_value, new_value, formatted_timestamp
+    );
+
+    // Send the formatted event data to all matching chats
+    let event_data = json!({
+        "config": {
+            "wide_screen_mode": true
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": content
+            }
+        ],
+        "header": {
+            "template": "yellow",
+            "title": {
+                "content": "App Store Connect",
+                "tag": "plain_text"
+            }
+        }
+    })
+    .to_string();
+
+    for chat_id in matching_chat_ids {
+        bot_data
+            .feishu_credential
+            .api_send_message(
+                &chat_id,
+                FeishuNewMessage::Interactive(event_data.clone()),
+            )
+            .await
+            .map_err(|e| {
+                error::ErrorBadRequest(format!("Failed to send message: {}", e))
+            })?;
+    }
+
+    Ok(HttpResponse::NoContent().finish())
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let app_id = std::env::var("FEISHU_APP_ID").expect("FEISHU_APP_ID must be set");
@@ -772,6 +899,7 @@ async fn main() -> std::io::Result<()> {
             .service(feishu_handler)
             .service(github_handler)
             .service(xcode_cloud_handler)
+            .service(app_store_connect_handler)
             .app_data(bot_data.clone())
     })
     .bind(("0.0.0.0", 18235))?
