@@ -849,7 +849,7 @@ async fn app_store_connect_handler(
                     "**Webhook Test Succeeded**\n\nTime: {}",
                     formatted_timestamp
                 ),
-                "App Store Connect",
+                "App Store Connect".to_string(),
             )
         }
         "appStoreVersionAppVersionStateUpdated" => {
@@ -903,7 +903,7 @@ async fn app_store_connect_handler(
         }
         _ => (
             "**Received unsupported App Store Connect event type.**".to_string(),
-            "App Store Connect",
+            "App Store Connect".to_string(),
         ),
     };
 
