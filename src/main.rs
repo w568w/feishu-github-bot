@@ -837,7 +837,7 @@ async fn app_store_connect_handler(
             let formatted_timestamp = if timestamp != "N/A" {
                 if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
                     let local_time = parsed_time.with_timezone(&chrono::Local);
-                    local_time.format("%Y-%m-%d %H:%M:%S %:z").to_string()
+                    local_time.format("%Y-%m-%d %H:%M:%S").to_string()
                 } else {
                     timestamp.to_string()
                 }
@@ -869,7 +869,7 @@ async fn app_store_connect_handler(
                 if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
                     // Use the device's local time zone
                     let local_time = parsed_time.with_timezone(&chrono::Local);
-                    local_time.format("%Y-%m-%d %H:%M:%S %:z").to_string()
+                    local_time.format("%Y-%m-%d %H:%M:%S").to_string()
                 } else {
                     timestamp.to_string()
                 }
