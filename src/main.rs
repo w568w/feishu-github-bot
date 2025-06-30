@@ -895,7 +895,7 @@ async fn app_store_connect_handler(
             let old_value_hr = screaming_snake_to_title(old_value);
             (
                 format!(
-                    "App Store Connect app state for `{}` updated.\n\nCurrent state: `{}`\nPrevious state: `{}`\n\nID: `{}`\nTime: {}",
+                    "App Store Connect app state for {} updated.\n\nCurrent state: {}\nPrevious state: {}\n\nID: {}\nTime: {}",
                     id, new_value_hr, old_value_hr, id, formatted_timestamp
                 ),
                 format!("App State Updated: {}", new_value_hr),
