@@ -1,6 +1,9 @@
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, error, post, web};
 use anyhow::anyhow;
+use chrono;
 use r#final::Final;
+use hex;
+use hmac::{Hmac, Mac};
 use once_cell::sync::Lazy;
 use polodb_core::bson::{doc, to_document};
 use polodb_core::results::DeleteResult;
@@ -9,13 +12,10 @@ use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sysinfo::{System, get_current_pid};
-use tokio::sync::{Mutex, RwLock};
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
-use hex;
-use chrono;
+use sysinfo::{System, get_current_pid};
+use tokio::sync::{Mutex, RwLock};
 
 struct FeishuCredential {
     app_id: Final<String>,
@@ -172,10 +172,14 @@ async fn feishu_message_handler(
     println!("Received message: {}", text_content);
     static HELP: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+help$").unwrap());
     static PING: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+ping$").unwrap());
-    static SUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$").unwrap());
-    static UNSUBSCRIBE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$").unwrap());
+    static SUBSCRIBE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$")
+            .unwrap()
+    });
+    static UNSUBSCRIBE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^@\S+\s+unsubscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$")
+            .unwrap()
+    });
     static LIST: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+list$").unwrap());
 
     if HELP.is_match(text_content) {
@@ -464,7 +468,7 @@ async fn github_handler(
                 .ok_or_else(|| error::ErrorBadRequest("No sender html url in request"))?;
             let content_body = match raw_action {
                 "created" => body["comment"]["body"].as_str().unwrap_or_default(),
-                _ => body["issue"]["body"].as_str().unwrap_or_default()
+                _ => body["issue"]["body"].as_str().unwrap_or_default(),
             };
             let action = match raw_action {
                 "opened" => "🐛 Issue Opened",
@@ -645,10 +649,7 @@ async fn xcode_cloud_handler(
     bot_data: web::Data<BotData>,
 ) -> actix_web::Result<HttpResponse> {
     let body = req_body.into_inner();
-    println!(
-        "Received Xcode Cloud event: {}",
-        body
-    );
+    println!("Received Xcode Cloud event: {}", body);
 
     let repo_name = body["scmRepository"]["attributes"]["repositoryName"]
         .as_str()
@@ -665,7 +666,7 @@ async fn xcode_cloud_handler(
     let event_type = body["metadata"]["attributes"]["eventType"]
         .as_str()
         .ok_or_else(|| error::ErrorBadRequest("No event type in request"))?;
-    
+
     let build_number = body["ciBuildRun"]["attributes"]["number"]
         .as_i64()
         .ok_or_else(|| error::ErrorBadRequest("No build number in request"))?;
@@ -695,12 +696,27 @@ async fn xcode_cloud_handler(
     };
 
     let content = match (execution_progress, completion_status) {
-        ("PENDING", _) => format!("Xcode Cloud Build {} Pending\n\nCommit: [{}]({}) by {}", build_number, commit_sha, commit_url, commit_author),
+        ("PENDING", _) => format!(
+            "Xcode Cloud Build {} Pending\n\nCommit: [{}]({}) by {}",
+            build_number, commit_sha, commit_url, commit_author
+        ),
         ("RUNNING", _) => format!("Xcode Cloud Build {} Started", build_number),
-        ("COMPLETE", "SUCCEEDED") => format!("Xcode Cloud Build {} Succeeded\n\nCommit: [{}]({}) by {}", build_number, commit_sha, commit_url, commit_author),
-        ("COMPLETE", "FAILED") => format!("Xcode Cloud Build {} Failed\n\nCommit: [{}]({}) by {}", build_number, commit_sha, commit_url, commit_author),
-        ("COMPLETE", _) => format!("Xcode Cloud Build {} Completed (Status {})\n\nCommit: [{}]({}) by {}", build_number, completion_status, commit_sha, commit_url, commit_author),
-        _ => format!("Xcode Cloud Build {} {}\n\nCommit: [{}]({}) by {}", build_number, execution_progress, commit_sha, commit_url, commit_author),
+        ("COMPLETE", "SUCCEEDED") => format!(
+            "Xcode Cloud Build {} Succeeded\n\nCommit: [{}]({}) by {}",
+            build_number, commit_sha, commit_url, commit_author
+        ),
+        ("COMPLETE", "FAILED") => format!(
+            "Xcode Cloud Build {} Failed\n\nCommit: [{}]({}) by {}",
+            build_number, commit_sha, commit_url, commit_author
+        ),
+        ("COMPLETE", _) => format!(
+            "Xcode Cloud Build {} Completed (Status {})\n\nCommit: [{}]({}) by {}",
+            build_number, completion_status, commit_sha, commit_url, commit_author
+        ),
+        _ => format!(
+            "Xcode Cloud Build {} {}\n\nCommit: [{}]({}) by {}",
+            build_number, execution_progress, commit_sha, commit_url, commit_author
+        ),
     };
 
     let db = bot_data.db.read().await;
@@ -708,9 +724,7 @@ async fn xcode_cloud_handler(
     let all_chats = col
         .find(doc! { "repo": &repo, "event": "XcodeCloud" })
         .run()
-        .map_err(|e| {
-            error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
-        })?;
+        .map_err(|e| error::ErrorNotFound(format!("Failed to find subscriptions: {}", e)))?;
 
     // build message card
     let header = json!({
@@ -748,14 +762,9 @@ async fn xcode_cloud_handler(
         if let Ok(chat) = chat {
             bot_data
                 .feishu_credential
-                .api_send_message(
-                    &chat.chat_id,
-                    FeishuNewMessage::Interactive(card.clone()),
-                )
+                .api_send_message(&chat.chat_id, FeishuNewMessage::Interactive(card.clone()))
                 .await
-                .map_err(|e| {
-                    error::ErrorBadRequest(format!("Failed to send message: {}", e))
-                })?;
+                .map_err(|e| error::ErrorBadRequest(format!("Failed to send message: {}", e)))?;
         }
     }
 
@@ -775,7 +784,9 @@ async fn app_store_connect_handler(
     let signature = req
         .headers()
         .get("x-apple-signature")
-        .ok_or(error::ErrorBadRequest("No x-apple-signature header in request"))?
+        .ok_or(error::ErrorBadRequest(
+            "No x-apple-signature header in request",
+        ))?
         .to_str()
         .map_err(|e| {
             error::ErrorBadRequest(format!("Failed to parse x-apple-signature header: {}", e))
@@ -791,9 +802,7 @@ async fn app_store_connect_handler(
     let all_subscriptions = col
         .find(doc! { "event": "AppStoreConnect" })
         .run()
-        .map_err(|e| {
-            error::ErrorNotFound(format!("Failed to find subscriptions: {}", e))
-        })?;
+        .map_err(|e| error::ErrorNotFound(format!("Failed to find subscriptions: {}", e)))?;
 
     let mut matching_chat_ids = Vec::new();
 
@@ -801,15 +810,15 @@ async fn app_store_connect_handler(
         if let Ok(subscription) = subscription_result {
             // Use the repo field as the secret for signature verification
             let secret = &subscription.repo;
-            
+
             // Verify the signature
             let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
                 .map_err(|e| error::ErrorBadRequest(format!("Failed to create HMAC: {}", e)))?;
-            
+
             mac.update(raw_body.as_bytes());
-            
+
             let expected_signature = hex::encode(mac.finalize().into_bytes());
-            
+
             if signature == expected_signature {
                 matching_chat_ids.push(subscription.chat_id);
             }
@@ -817,31 +826,67 @@ async fn app_store_connect_handler(
     }
 
     if matching_chat_ids.is_empty() {
-        return Err(error::ErrorBadRequest("No matching subscription found for signature"));
+        return Err(error::ErrorBadRequest(
+            "No matching subscription found for signature",
+        ));
     }
 
-    // Extract the specific fields from the webhook payload
-    let new_value = body["newValue"].as_str().unwrap_or("N/A");
-    let old_value = body["oldValue"].as_str().unwrap_or("N/A");
-    let timestamp = body["timestamp"].as_str().unwrap_or("N/A");
-    
-    // Format the timestamp
-    let formatted_timestamp = if timestamp != "N/A" {
-        // Parse ISO 8601 timestamp and format it
-        if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-        } else {
-            timestamp.to_string()
+    // Determine event type
+    let event_type = body["data"]["type"].as_str().unwrap_or("");
+    let (content, card_title) = match event_type {
+        "webhookPingCreated" => {
+            let timestamp = body["data"]["attributes"]["timestamp"]
+                .as_str()
+                .unwrap_or("N/A");
+            let formatted_timestamp = if timestamp != "N/A" {
+                if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                } else {
+                    timestamp.to_string()
+                }
+            } else {
+                timestamp.to_string()
+            };
+            (
+                format!(
+                    "**Webhook Test Succeeded**\n\nTime: {}",
+                    formatted_timestamp
+                ),
+                "App Store Connect",
+            )
         }
-    } else {
-        timestamp.to_string()
+        "appStoreVersionAppVersionStateUpdated" => {
+            let new_value = body["data"]["attributes"]["newValue"]
+                .as_str()
+                .unwrap_or("N/A");
+            let old_value = body["data"]["attributes"]["oldValue"]
+                .as_str()
+                .unwrap_or("N/A");
+            let timestamp = body["data"]["attributes"]["timestamp"]
+                .as_str()
+                .unwrap_or("N/A");
+            let formatted_timestamp = if timestamp != "N/A" {
+                if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                } else {
+                    timestamp.to_string()
+                }
+            } else {
+                timestamp.to_string()
+            };
+            (
+                format!(
+                    "App state changed from **{}** to **{}**\n\nTime: {}",
+                    old_value, new_value, formatted_timestamp
+                ),
+                "App State Updated",
+            )
+        }
+        _ => (
+            "**Received unsupported App Store Connect event type.**".to_string(),
+            "App Store Connect",
+        ),
     };
-
-    // Create a formatted message with only the requested fields
-    let content = format!(
-        "**Status Change**\n\n**From:** {}\n**To:** {}\n**Time:** {}",
-        old_value, new_value, formatted_timestamp
-    );
 
     // Send the formatted event data to all matching chats
     let event_data = json!({
@@ -857,7 +902,7 @@ async fn app_store_connect_handler(
         "header": {
             "template": "yellow",
             "title": {
-                "content": "App Store Connect",
+                "content": card_title,
                 "tag": "plain_text"
             }
         }
@@ -867,14 +912,9 @@ async fn app_store_connect_handler(
     for chat_id in matching_chat_ids {
         bot_data
             .feishu_credential
-            .api_send_message(
-                &chat_id,
-                FeishuNewMessage::Interactive(event_data.clone()),
-            )
+            .api_send_message(&chat_id, FeishuNewMessage::Interactive(event_data.clone()))
             .await
-            .map_err(|e| {
-                error::ErrorBadRequest(format!("Failed to send message: {}", e))
-            })?;
+            .map_err(|e| error::ErrorBadRequest(format!("Failed to send message: {}", e)))?;
     }
 
     Ok(HttpResponse::NoContent().finish())
