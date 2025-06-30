@@ -820,28 +820,47 @@ async fn app_store_connect_handler(
         return Err(error::ErrorBadRequest("No matching subscription found for signature"));
     }
 
-    // Extract the specific fields from the webhook payload
-    let new_value = body["newValue"].as_str().unwrap_or("N/A");
-    let old_value = body["oldValue"].as_str().unwrap_or("N/A");
-    let timestamp = body["timestamp"].as_str().unwrap_or("N/A");
-    
-    // Format the timestamp
-    let formatted_timestamp = if timestamp != "N/A" {
-        // Parse ISO 8601 timestamp and format it
-        if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-        } else {
-            timestamp.to_string()
+    // Determine event type
+    let event_type = body["data"]["type"].as_str().unwrap_or("");
+    let (content, card_title) = match event_type {
+        "webhookPingCreated" => {
+            let timestamp = body["data"]["attributes"]["timestamp"].as_str().unwrap_or("N/A");
+            let formatted_timestamp = if timestamp != "N/A" {
+                if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                } else {
+                    timestamp.to_string()
+                }
+            } else {
+                timestamp.to_string()
+            };
+            (format!("**Webhook Test Succeeded**\n\nTime: {}", formatted_timestamp), "App Store Connect")
         }
-    } else {
-        timestamp.to_string()
+        "appStoreVersionAppVersionStateUpdated" => {
+            let new_value = body["data"]["attributes"]["newValue"].as_str().unwrap_or("N/A");
+            let old_value = body["data"]["attributes"]["oldValue"].as_str().unwrap_or("N/A");
+            let timestamp = body["data"]["attributes"]["timestamp"].as_str().unwrap_or("N/A");
+            let formatted_timestamp = if timestamp != "N/A" {
+                if let Ok(parsed_time) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+                    parsed_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                } else {
+                    timestamp.to_string()
+                }
+            } else {
+                timestamp.to_string()
+            };
+            (
+                format!(
+                    "App state changed from **{}** to **{}**\n\nTime: {}",
+                    old_value, new_value, formatted_timestamp
+                ),
+                "App State Updated"
+            )
+        }
+        _ => {
+            ("**Received unsupported App Store Connect event type.**".to_string(), "App Store Connect")
+        }
     };
-
-    // Create a formatted message with only the requested fields
-    let content = format!(
-        "**Status Change**\n\n**From:** {}\n**To:** {}\n**Time:** {}",
-        old_value, new_value, formatted_timestamp
-    );
 
     // Send the formatted event data to all matching chats
     let event_data = json!({
@@ -857,7 +876,7 @@ async fn app_store_connect_handler(
         "header": {
             "template": "yellow",
             "title": {
-                "content": "App Store Connect",
+                "content": card_title,
                 "tag": "plain_text"
             }
         }
