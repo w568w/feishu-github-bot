@@ -2,6 +2,7 @@
 name = "feishu-github-bot"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [profile.release]
 strip = true
@@ -25,3 +26,6 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
+
+[build-dependencies]
+built = { version = "0.8", features = ["git2"] }

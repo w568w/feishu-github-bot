@@ -171,6 +171,7 @@ async fn feishu_message_handler(
     let text_content = message["text"].as_str().unwrap_or("").trim();
     println!("Received message: {}", text_content);
     static HELP: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+help$").unwrap());
+    static VERSION: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+version$").unwrap());
     static PING: Lazy<Regex> = Lazy::new(|| Regex::new(r"^@\S+\s+ping$").unwrap());
     static SUBSCRIBE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"^@\S+\s+subscribe\s+(\S+)\s+(pr|issue|xcode-cloud|app-store-connect)$")
@@ -194,6 +195,13 @@ async fn feishu_message_handler(
 
 For App Store Connect, use the secret as the repo parameter.
 "#
+            })
+            .to_string(),
+        )
+    } else if VERSION.is_match(text_content) {
+        FeishuNewMessage::Text(
+            json!({
+                "text": format!("Feishu GitHub Bot Version: {}", built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown"))
             })
             .to_string(),
         )
@@ -964,4 +972,9 @@ async fn main() -> std::io::Result<()> {
     .bind(("0.0.0.0", 18235))?
     .run()
     .await
+}
+
+pub mod built_info {
+   // The file has been placed there by the build script.
+   include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
